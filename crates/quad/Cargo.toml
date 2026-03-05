@@ -8,8 +8,15 @@ repository = "https://github.com/m0at/quadprec"
 keywords = ["f128", "quad-precision", "double-double", "linear-algebra", "cholesky"]
 categories = ["mathematics", "science", "no-std::no-alloc"]
 
+[features]
+serde = ["dep:serde"]
+num-traits = ["dep:num-traits"]
+
 [dependencies]
 rayon = { workspace = true }
+serde = { version = "1", features = ["derive"], optional = true }
+num-traits = { version = "0.2", optional = true }
 
 [dev-dependencies]
 rand = "0.9"
+serde_json = "1"

@@ -1,5 +1,11 @@
 use quad::{f128, cholesky, solve_cholesky, matvec, cond_estimate};
 
+#[cfg(all(feature = "accelerate", target_os = "macos"))]
+mod accelerate;
+
+mod ortho;
+pub use ortho::*;
+
 /// Result of solving Ax = b with automatic precision selection.
 pub struct Solution {
     /// Solution vector in quad precision. Use this when kappa(A) > ~10^10.
@@ -36,8 +42,7 @@ pub fn solve_spd(a_f64: &[f64], b_f64: &[f64], n: usize) -> Result<Solution, Sol
     let a128 = promote_matrix(a_f64);
     let b128: Vec<f128> = b_f64.iter().map(|&v| f128::from_f64(v)).collect();
 
-    if let Some(l64) = cholesky_f64(a_f64, n) {
-        let x64 = solve_cholesky_f64(&l64, b_f64, n);
+    if let Some((l64, x64)) = factor_and_solve_f64(a_f64, b_f64, n) {
         let kappa = cond_estimate_f64(&l64, n);
 
         // Well-conditioned: f64 is sufficient
@@ -140,6 +145,27 @@ fn solve_pure_f128(a128: &[f128], b128: &[f128], n: usize) -> Result<Solution, S
 
 // ---- f64 helpers ----
 
+/// Factor and solve in f64, using Accelerate if available.
+fn factor_and_solve_f64(a: &[f64], b: &[f64], n: usize) -> Option<(Vec<f64>, Vec<f64>)> {
+    #[cfg(all(feature = "accelerate", target_os = "macos"))]
+    {
+        let mut l = a.to_vec();
+        if accelerate::cholesky_accelerate(&mut l, n).is_ok() {
+            let mut x = b.to_vec();
+            accelerate::solve_cholesky_accelerate(&l, &mut x, n);
+            return Some((l, x));
+        }
+        return None;
+    }
+    #[cfg(not(all(feature = "accelerate", target_os = "macos")))]
+    {
+        let l = cholesky_f64(a, n)?;
+        let x = solve_cholesky_f64(&l, b, n);
+        Some((l, x))
+    }
+}
+
+#[cfg(not(all(feature = "accelerate", target_os = "macos")))]
 fn cholesky_f64(a: &[f64], n: usize) -> Option<Vec<f64>> {
     let mut l = a.to_vec();
     for j in 0..n {
@@ -168,6 +194,7 @@ fn cholesky_f64(a: &[f64], n: usize) -> Option<Vec<f64>> {
     Some(l)
 }
 
+#[cfg(not(all(feature = "accelerate", target_os = "macos")))]
 fn solve_cholesky_f64(l: &[f64], b: &[f64], n: usize) -> Vec<f64> {
     let mut y = b.to_vec();
     for i in 0..n {
@@ -263,7 +290,9 @@ mod tests {
         let a = hilbert_matrix(n);
         let b = vec![1.0; n];
         let sol = solve_spd(&a, &b, n).unwrap();
-        assert_eq!(sol.strategy, Strategy::Float128);
+        // Accelerate's dpotrf may succeed where hand-written f64 Cholesky fails
+        assert!(sol.strategy == Strategy::Float128 || sol.strategy == Strategy::MixedPrecision,
+            "Expected Float128 or MixedPrecision, got {:?}", sol.strategy);
         assert!(sol.kappa > 1e12);
     }
 

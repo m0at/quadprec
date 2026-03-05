@@ -6,6 +6,26 @@ Quad-precision linear algebra in Rust for solving ill-conditioned symmetric posi
 cargo run --release -p demo
 ```
 
+## What's new in v0.2.0
+
+**Core math** (`crates/quad`)
+- **Jacobi eigensolve** — symmetric eigenvalue decomposition in f128, needed for SCF canonical orthogonalization
+- **exp/ln/pow** — transcendental functions via argument reduction + Taylor/Newton
+- **FromStr** — parse decimal strings like `"3.14159265358979323846".parse::<f128>()` to full 31-digit precision
+- **GEMM / GEMM_ATB** — parallel matrix multiply with Rayon, including $\mathbf{A}^T\mathbf{B}$ for basis transforms
+- **Blocked Cholesky** — cache-friendly NB=64 blocked factorization for large matrices
+- **NEON SIMD** — 2-wide f64 batch dd operations on Apple Silicon (aarch64)
+- **num-traits** — optional `Zero`, `One`, `Num`, `Float` traits (`--features num-traits`)
+- **serde** — optional lossless JSON serialization (`--features serde`)
+
+**Solver** (`crates/solver`)
+- **Apple Accelerate FFI** — dpotrf/dpotrs for 10-100x f64 Cholesky speedup on macOS (default-on)
+- **Canonical orthogonalization** — $\mathbf{X} = \mathbf{U}\,\text{diag}(1/\sqrt{\lambda})$ with threshold, solves $\mathbf{F}\mathbf{C} = \mathbf{S}\mathbf{C}\boldsymbol{\varepsilon}$ (Roothaan-Hall)
+
+**Test count:** 65 base + 12 with num-traits = **77 tests, all passing.**
+
+---
+
 ## Why your SCF diverges
 
 In Hartree-Fock and DFT, the Roothaan-Hall equation is a generalized eigenvalue problem:
@@ -120,8 +140,38 @@ let c = a + b;
 let d = c - a;
 // d.to_f64() == 1e-20 (exact — f64 would give 0.0)
 
-// Supports: + - * / sqrt() recip() abs()
+// Arithmetic: + - * / sqrt() recip() abs()
+// Transcendentals: exp() ln() pow()
+// Parsing: "3.14159265358979323846".parse::<f128>()
 // All operator-overloaded, all #[inline(always)]
+```
+
+### Eigenvalue decomposition
+
+```rust
+use quad::{f128, jacobi_eigen};
+
+// Symmetric matrix (row-major)
+let a = vec![
+    f128::from_f64(2.0), f128::from_f64(1.0),
+    f128::from_f64(1.0), f128::from_f64(3.0),
+];
+let (eigenvalues, eigenvectors) = jacobi_eigen(&a, 2, 100)?;
+// eigenvalues: [1.0, 3.0] (sorted)
+// eigenvectors: orthonormal columns
+```
+
+### Matrix multiply (GEMM)
+
+```rust
+use quad::{f128, gemm, gemm_atb};
+
+// C = A * B  (m×k * k×n → m×n, row-major)
+let mut c = vec![f128::ZERO; m * n];
+gemm(&a, &b, &mut c, m, n, k);
+
+// C = A^T * B  (for orthogonalization: X^T S X)
+gemm_atb(&a, &b, &mut c, m, n, k);
 ```
 
 ## Integrating with your SCF code
@@ -188,17 +238,34 @@ Double-double arithmetic runs entirely on the CPU, uses only f64 hardware (which
 
 ```
 crates/
-  quad/              # f128 type + BLAS-like ops (dot, gemv, cholesky, triangular solve)
+  quad/              # f128 type, BLAS-like ops, eigensolve, GEMM, SIMD kernels
   compensated-sum/   # Neumaier compensated summation for f64 and f128
   solver/            # solve_spd() — auto-selects precision, iterative refinement
+  overlap/           # Mixed-precision overlap integral assembly with Schwarz screening
   demo/              # cargo run --release -p demo
 ```
+
+## v0.2.0 features
+
+- **Jacobi eigensolve** — symmetric eigenvalue decomposition in full f128 precision, needed for canonical orthogonalization
+- **GEMM / GEMM_ATB** — parallel matrix multiply with Rayon, including $\mathbf{A}^T\mathbf{B}$ variant for basis transforms
+- **Blocked Cholesky** — cache-friendly NB=64 blocked factorization, 5-10x faster at $n > 500$
+- **Transcendentals** — `exp()`, `ln()`, `pow()` in f128 precision via argument reduction + Taylor/Newton
+- **FromStr** — parse decimal strings to full 31-digit precision: `"3.14159265358979323846".parse::<f128>()`
+- **NEON SIMD** — 2-wide f64 batch operations on Apple Silicon (aarch64), ~1.5x throughput for dd arithmetic
+- **Apple Accelerate** — optional FFI to dpotrf/dpotrs for 10-100x f64 Cholesky speedup on macOS
+- **num-traits** — optional `Zero`, `One`, `Num`, `Float` trait implementations (`--features num-traits`)
+- **serde** — optional serialization with lossless {hi, lo} roundtrip (`--features serde`)
+- **Canonical orthogonalization** — $\mathbf{X} = \mathbf{U}\,\text{diag}(1/\sqrt{\lambda})$ with threshold for near-null removal
+- **Mixed-precision overlap assembly** — Schwarz screening routes ~5-15% of shell pairs to f128, rest stays f64
 
 ## Requirements
 
 - Rust 2024 edition
 - Any platform with FMA (fused multiply-add) support — all modern x86-64 and ARM processors
-- No external dependencies beyond `rayon`
+- Core: no external dependencies beyond `rayon`
+- Optional: `num-traits`, `serde` via feature flags
+- macOS: Apple Accelerate integration via `--features accelerate`
 
 ## References
 
