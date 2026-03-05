@@ -4,5 +4,5 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-quad = { path = "../quad" }
+quad = { path = "../quad", package = "quadprec" }
 rayon = { workspace = true }
