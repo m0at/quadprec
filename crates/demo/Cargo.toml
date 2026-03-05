@@ -8,6 +8,6 @@ name = "overlap-demo"
 path = "src/main.rs"
 
 [dependencies]
-quad = { path = "../quad", package = "quadprec" }
+quad = { path = "../quad", package = "hyperprec" }
 quadprec-solver = { path = "../solver" }
 rayon = { workspace = true }

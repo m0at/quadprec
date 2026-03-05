@@ -8,5 +8,5 @@ default = ["accelerate"]
 accelerate = []
 
 [dependencies]
-quad = { path = "../quad", package = "quadprec" }
+quad = { path = "../quad", package = "hyperprec" }
 rayon = { workspace = true }
