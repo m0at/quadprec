@@ -1,4 +1,5 @@
 use std::fmt;
+use std::iter::{Sum, Product};
 use std::ops::{Add, Sub, Mul, Div, Neg, AddAssign, SubAssign, MulAssign, DivAssign};
 
 #[allow(non_camel_case_types)]
@@ -10,7 +11,6 @@ pub struct f128 {
 
 // --- Primitives (Dekker/Knuth) ---
 
-/// Error-free addition: s + e = a + b exactly.
 #[inline(always)]
 fn two_sum(a: f64, b: f64) -> (f64, f64) {
     let s = a + b;
@@ -19,7 +19,6 @@ fn two_sum(a: f64, b: f64) -> (f64, f64) {
     (s, e)
 }
 
-/// Fast version when |a| >= |b|.
 #[inline(always)]
 fn quick_two_sum(a: f64, b: f64) -> (f64, f64) {
     let s = a + b;
@@ -27,11 +26,10 @@ fn quick_two_sum(a: f64, b: f64) -> (f64, f64) {
     (s, e)
 }
 
-/// Error-free multiplication: p + e = a * b exactly.
 #[inline(always)]
 fn two_prod(a: f64, b: f64) -> (f64, f64) {
     let p = a * b;
-    let e = a.mul_add(b, -p); // FMA: exact error term
+    let e = a.mul_add(b, -p);
     (p, e)
 }
 
@@ -55,36 +53,42 @@ impl f128 {
     }
 
     pub fn abs(self) -> Self {
-        if self.hi < 0.0 { -self } else { self }
+        if self.hi.is_sign_negative() { -self } else { self }
     }
 
     pub fn sqrt(self) -> Self {
-        if self.hi == 0.0 && self.lo == 0.0 {
+        if self.hi < 0.0 {
+            return Self::new(f64::NAN, 0.0);
+        }
+        if self.hi == 0.0 {
             return Self::ZERO;
         }
-        // Newton iteration: x_{n+1} = 0.5 * (x_n + a/x_n)
-        // One iteration from f64 seed gives full double-double accuracy.
+        if !self.hi.is_finite() {
+            return Self::new(self.hi, 0.0);
+        }
+        // Goldschmidt from f64 seed, then Newton correction for full precision.
         let x = Self::from_f64(1.0 / self.hi.sqrt());
-        // Goldschmidt refinement: r = a*x, h = 0.5*x, then r + r*(0.5 - r*h)
         let ax = self * x;
         let hx = x * Self::from_f64(0.5);
         let r = ax + ax * (Self::from_f64(0.5) - ax * hx);
-        r
+        // Second Newton step: r2 = 0.5 * (r + self/r) locks in all ~106 bits.
+        (r + self / r) * Self::from_f64(0.5)
     }
 
     pub fn recip(self) -> Self {
-        // Newton iteration on 1/a, starting from f64 seed.
         let x0 = Self::from_f64(1.0 / self.hi);
-        // One Newton step: x1 = x0 + x0*(1 - a*x0)
         x0 + x0 * (Self::ONE - self * x0)
     }
 
-    /// Renormalize so invariant |lo| <= 0.5 * ulp(hi) holds.
     #[inline(always)]
     fn renorm(hi: f64, lo: f64) -> Self {
         let (s, e) = quick_two_sum(hi, lo);
         Self { hi: s, lo: e }
     }
+
+    pub fn is_nan(self) -> bool { self.hi.is_nan() }
+    pub fn is_finite(self) -> bool { self.hi.is_finite() }
+    pub fn is_zero(self) -> bool { self.hi == 0.0 }
 }
 
 // --- Arithmetic ---
@@ -94,8 +98,10 @@ impl Add for f128 {
     #[inline(always)]
     fn add(self, rhs: Self) -> Self {
         let (s1, e1) = two_sum(self.hi, rhs.hi);
-        let e = e1 + (self.lo + rhs.lo);
-        Self::renorm(s1, e)
+        let (s2, e2) = two_sum(self.lo, rhs.lo);
+        let e = e1 + s2;
+        let (s, e) = quick_two_sum(s1, e);
+        Self::renorm(s, e + e2)
     }
 }
 
@@ -129,7 +135,11 @@ impl Div for f128 {
     type Output = Self;
     #[inline(always)]
     fn div(self, rhs: Self) -> Self {
-        self * rhs.recip()
+        // Direct division: more accurate than self * rhs.recip()
+        let q1 = self.hi / rhs.hi;
+        let r = self - Self::from_f64(q1) * rhs;
+        let q2 = r.hi / rhs.hi;
+        Self::renorm(q1, q2)
     }
 }
 
@@ -153,20 +163,110 @@ impl DivAssign for f128 {
     fn div_assign(&mut self, rhs: Self) { *self = *self / rhs; }
 }
 
-// --- Conversions & Display ---
+// --- Mixed f128/f64 ops (avoids unnecessary promotion) ---
+
+impl Add<f64> for f128 {
+    type Output = Self;
+    #[inline(always)]
+    fn add(self, rhs: f64) -> Self {
+        let (s1, e1) = two_sum(self.hi, rhs);
+        Self::renorm(s1, e1 + self.lo)
+    }
+}
+
+impl Sub<f64> for f128 {
+    type Output = Self;
+    #[inline(always)]
+    fn sub(self, rhs: f64) -> Self { self + (-rhs) }
+}
+
+impl Mul<f64> for f128 {
+    type Output = Self;
+    #[inline(always)]
+    fn mul(self, rhs: f64) -> Self {
+        let (p1, e1) = two_prod(self.hi, rhs);
+        Self::renorm(p1, e1 + self.lo * rhs)
+    }
+}
+
+impl Div<f64> for f128 {
+    type Output = Self;
+    #[inline(always)]
+    fn div(self, rhs: f64) -> Self {
+        let q1 = self.hi / rhs;
+        let r = self - Self::from_f64(q1) * Self::from_f64(rhs);
+        Self::renorm(q1, r.hi / rhs)
+    }
+}
+
+// --- Conversions ---
 
 impl From<f64> for f128 {
     #[inline(always)]
     fn from(x: f64) -> Self { Self::from_f64(x) }
 }
 
+impl From<f32> for f128 {
+    #[inline(always)]
+    fn from(x: f32) -> Self { Self::from_f64(x as f64) }
+}
+
+impl From<i32> for f128 {
+    #[inline(always)]
+    fn from(x: i32) -> Self { Self::from_f64(x as f64) }
+}
+
+impl From<u32> for f128 {
+    #[inline(always)]
+    fn from(x: u32) -> Self { Self::from_f64(x as f64) }
+}
+
 impl From<i64> for f128 {
     fn from(x: i64) -> Self {
-        let hi = x as f64;
-        let lo = (x - hi as i64) as f64;
-        Self { hi, lo }
+        // Split into two 32-bit halves to avoid overflow on large values.
+        let hi_part = (x >> 32) as f64 * (1u64 << 32) as f64;
+        let lo_part = (x as u64 & 0xFFFFFFFF) as f64;
+        let (s, e) = two_sum(hi_part, lo_part);
+        Self { hi: s, lo: e }
     }
 }
+
+impl From<u64> for f128 {
+    fn from(x: u64) -> Self {
+        let hi_part = (x >> 32) as f64 * (1u64 << 32) as f64;
+        let lo_part = (x & 0xFFFFFFFF) as f64;
+        let (s, e) = two_sum(hi_part, lo_part);
+        Self { hi: s, lo: e }
+    }
+}
+
+// --- Iterator traits ---
+
+impl Sum for f128 {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::ZERO, |a, b| a + b)
+    }
+}
+
+impl<'a> Sum<&'a f128> for f128 {
+    fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
+        iter.fold(Self::ZERO, |a, b| a + *b)
+    }
+}
+
+impl Product for f128 {
+    fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::ONE, |a, b| a * b)
+    }
+}
+
+impl<'a> Product<&'a f128> for f128 {
+    fn product<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
+        iter.fold(Self::ONE, |a, b| a * *b)
+    }
+}
+
+// --- Display ---
 
 impl fmt::Debug for f128 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -176,7 +276,6 @@ impl fmt::Debug for f128 {
 
 impl fmt::Display for f128 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Print as combined value with max precision
         write!(f, "{:.32e}", self.hi + self.lo)
     }
 }
@@ -204,23 +303,18 @@ mod tests {
 
     #[test]
     fn add_exact() {
-        // 1 + 1e-20 should not lose the small part
         let a = f128::from_f64(1.0);
         let b = f128::from_f64(1e-20);
         let c = a + b;
         let d = c - a;
-        // In pure f64, (1.0 + 1e-20) - 1.0 != 1e-20 due to rounding.
-        // In double-double, it should be exact.
         assert!((d.to_f64() - 1e-20).abs() < 1e-35,
             "Expected ~1e-20, got {}", d.to_f64());
     }
 
     #[test]
     fn mul_precision() {
-        // (1 + eps)^2 where eps = 2^-53. Result = 1 + 2*eps + eps^2.
-        // f64 loses eps^2; double-double should keep it.
-        let eps = f64::EPSILON; // 2^-52 ≈ 2.22e-16
-        let small = eps * 0.5; // 2^-53
+        let eps = f64::EPSILON;
+        let small = eps * 0.5;
         let a = f128::new(1.0, small);
         let c = a * a;
         let expected = 2.0 * small + small * small;
@@ -239,10 +333,24 @@ mod tests {
     }
 
     #[test]
+    fn sqrt_edge_cases() {
+        assert!(f128::from_f64(-1.0).sqrt().is_nan());
+        assert_eq!(f128::ZERO.sqrt().to_f64(), 0.0);
+        assert!(f128::from_f64(f64::INFINITY).sqrt().to_f64().is_infinite());
+        assert!(f128::from_f64(f64::NAN).sqrt().is_nan());
+    }
+
+    #[test]
+    fn div_precision() {
+        // 1/3 * 3 should be very close to 1
+        let third = f128::ONE / f128::from_f64(3.0);
+        let result = third * f128::from_f64(3.0);
+        let err = (result - f128::ONE).abs().to_f64();
+        assert!(err < 1e-31, "1/3 * 3 error: {err:e}");
+    }
+
+    #[test]
     fn catastrophic_cancellation() {
-        // Classic: compute (a+b) - a where a >> b
-        // In f64: 1e16 + 1.0 - 1e16 = 0.0 (catastrophic loss)
-        // In dd: should recover 1.0
         let a = f128::from_f64(1e16);
         let b = f128::from_f64(1.0);
         let result = (a + b) - a;
@@ -252,8 +360,6 @@ mod tests {
 
     #[test]
     fn kahan_sum_scenario() {
-        // Sum of 1e16 ones: in f64, accumulating 1.0 loses precision past ~2^53.
-        // In dd, should be exact.
         let n = 100_000;
         let one = f128::from_f64(1.0);
         let mut sum = f128::ZERO;
@@ -261,5 +367,39 @@ mod tests {
             sum += one;
         }
         assert_eq!(sum.to_f64(), n as f64);
+    }
+
+    #[test]
+    fn from_i64_large() {
+        // Values > 2^53 should not lose precision
+        let x: i64 = (1i64 << 53) + 1;
+        let f = f128::from(x);
+        let back = f.hi as i64 + f.lo as i64;
+        assert_eq!(back, x, "i64 roundtrip failed for 2^53+1");
+    }
+
+    #[test]
+    fn mixed_f64_ops() {
+        let a = f128::from_f64(1.0);
+        let b = a + 1e-20;
+        let c = b - 1e-20;
+        assert!((c.to_f64() - 1.0).abs() < 1e-31);
+
+        let d = f128::from_f64(3.0) * 2.0;
+        assert_eq!(d.to_f64(), 6.0);
+    }
+
+    #[test]
+    fn abs_negative_zero() {
+        let nz = f128::new(-0.0, 0.0);
+        let result = nz.abs();
+        assert!(!result.hi.is_sign_negative(), "abs(-0) should be +0");
+    }
+
+    #[test]
+    fn sum_trait() {
+        let vals: Vec<f128> = (1..=100).map(|i| f128::from_f64(i as f64)).collect();
+        let total: f128 = vals.iter().sum();
+        assert_eq!(total.to_f64(), 5050.0);
     }
 }
