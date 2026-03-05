@@ -1,5 +1,7 @@
 # hyperprec
 
+I started this just to get quad precision, ended up going way further which is why it's "hyperprec" and not quadprec. I just made this recently and shared it so I didn't want dead url's flying around, soon enough I'll change the name to hyperprec, the Rust crate is hyperprec. Enjoy!
+
 Software-emulated extended precision floating point in Rust: **f128**, **f256**, and **f512**.
 
 ```rust
