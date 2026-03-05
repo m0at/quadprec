@@ -1,7 +1,12 @@
 [package]
-name = "quad"
+name = "quadprec"
 version.workspace = true
 edition.workspace = true
+description = "Software-emulated quad precision (f128) via double-double arithmetic — Cholesky, dot, gemv for ill-conditioned linear algebra"
+license = "MIT"
+repository = "https://github.com/m0at/quadprec"
+keywords = ["f128", "quad-precision", "double-double", "linear-algebra", "cholesky"]
+categories = ["mathematics", "science", "no-std::no-alloc"]
 
 [dependencies]
 rayon = { workspace = true }
