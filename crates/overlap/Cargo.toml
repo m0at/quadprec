@@ -1,0 +1,9 @@
+[package]
+name = "overlap"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+quad = { path = "../quad", package = "quadprec" }
+compensated-sum = { path = "../compensated-sum" }
+rayon.workspace = true
