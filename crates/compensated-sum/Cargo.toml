@@ -1,0 +1,8 @@
+[package]
+name = "compensated-sum"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+quad = { path = "../quad" }
+rayon = { workspace = true }
