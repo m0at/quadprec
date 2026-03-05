@@ -3,6 +3,10 @@ name = "quadprec-solver"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["accelerate"]
+accelerate = []
+
 [dependencies]
 quad = { path = "../quad", package = "quadprec" }
 rayon = { workspace = true }
