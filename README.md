@@ -1,32 +1,144 @@
-# quadprec
+# hyperprec
 
-Quad-precision linear algebra in Rust for solving ill-conditioned symmetric positive definite systems — specifically the overlap matrix problem that kills SCF convergence in quantum chemistry.
+Software-emulated extended precision floating point in Rust: **f128**, **f256**, and **f512**.
 
+```rust
+use hyperprec::{f128, f256, f512};
+
+let x = f256::from_f64(1.0) + f256::from_f64(1e-40);
+let y = x - f256::from_f64(1.0);
+// y.to_f64() == 1e-40 (exact -- f64 would give 0.0)
 ```
-cargo run --release -p demo
+
+## Precision
+
+| Type | Limbs | Significand bits | Decimal digits | Relative cost vs f64 |
+|------|:-----:|:----------------:|:--------------:|:--------------------:|
+| `f64`  | 1 | 53   | ~16  | 1x |
+| `f128` | 2 | 106  | ~31  | ~10x |
+| `f256` | 4 | 212  | ~63  | ~40-60x |
+| `f512` | 8 | 424  | ~127 | ~150-200x |
+
+All types are built from non-overlapping expansions of `f64` limbs, using error-free transformations:
+
+$$\texttt{TwoSum}(a,b): \quad s + e = a + b \quad\text{exactly}$$
+
+$$\texttt{TwoProd}(a,b): \quad p + e = a \times b \quad\text{exactly (via FMA)}$$
+
+`f128` is a hand-tuned double-double type. `f256` and `f512` are `MultiFloat<4>` and `MultiFloat<8>` respectively -- a generic $N$-limb expansion with the same error-free primitives.
+
+## Usage
+
+### f128 (double-double, ~31 digits)
+
+```rust
+use hyperprec::f128;
+
+let a = f128::from_f64(1.0);
+let b = f128::from_f64(1e-20);
+let c = a + b;
+let d = c - a;
+assert!((d.to_f64() - 1e-20).abs() < 1e-35);
+
+// Parse from string to full precision
+let pi: f128 = "3.14159265358979323846264338327950288".parse().unwrap();
+
+// Transcendentals
+let e = f128::ONE.exp();
+let ln2 = f128::from_f64(2.0).ln();
+let pow = f128::from_f64(2.0).pow(f128::from_f64(10.0)); // 1024.0
 ```
 
-## What's new in v0.2.0
+### f256 (quad-double, ~63 digits)
 
-**Core math** (`crates/quad`)
-- **Jacobi eigensolve** — symmetric eigenvalue decomposition in f128, needed for SCF canonical orthogonalization
-- **exp/ln/pow** — transcendental functions via argument reduction + Taylor/Newton
-- **FromStr** — parse decimal strings like `"3.14159265358979323846".parse::<f128>()` to full 31-digit precision
-- **GEMM / GEMM_ATB** — parallel matrix multiply with Rayon, including $\mathbf{A}^T\mathbf{B}$ for basis transforms
-- **Blocked Cholesky** — cache-friendly NB=64 blocked factorization for large matrices
-- **NEON SIMD** — 2-wide f64 batch dd operations on Apple Silicon (aarch64)
-- **num-traits** — optional `Zero`, `One`, `Num`, `Float` traits (`--features num-traits`)
-- **serde** — optional lossless JSON serialization (`--features serde`)
+```rust
+use hyperprec::f256;
 
-**Solver** (`crates/solver`)
-- **Apple Accelerate FFI** — dpotrf/dpotrs for 10-100x f64 Cholesky speedup on macOS (default-on)
-- **Canonical orthogonalization** — $\mathbf{X} = \mathbf{U}\,\text{diag}(1/\sqrt{\lambda})$ with threshold, solves $\mathbf{F}\mathbf{C} = \mathbf{S}\mathbf{C}\boldsymbol{\varepsilon}$ (Roothaan-Hall)
+let one = f256::ONE;
+let seven = f256::from_f64(7.0);
+let seventh = one / seven;
+let back = seventh * seven;
+// (back - one).limbs[0].abs() < 1e-60
 
-**Test count:** 65 base + 12 with num-traits = **77 tests, all passing.**
+// Constants at full precision
+let pi = f256::pi();
+let e = f256::e();
+let ln2 = f256::ln2();
+```
 
----
+### f512 (octo-double, ~127 digits)
 
-## Why your SCF diverges
+```rust
+use hyperprec::f512;
+
+let one = f512::ONE;
+let seven = f512::from_f64(7.0);
+let seventh = one / seven;
+let back = seventh * seven;
+// (back - one).limbs[0].abs() < 1e-100
+```
+
+### Linear algebra
+
+All linear algebra operations are available for both `f128` and `MultiFloat<N>`:
+
+```rust
+use hyperprec::{f128, dot, gemv, gemm, gemm_atb, cholesky, solve_cholesky, jacobi_eigen};
+use hyperprec::multifloat::{mf_dot, mf_gemv, mf_gemm, mf_gemm_atb, mf_cholesky, mf_cholesky_solve};
+
+// f128 Cholesky solve
+let n = 4;
+let mut a = vec![f128::ZERO; n * n];
+for i in 0..n {
+    for j in 0..n {
+        a[i * n + j] = f128::from_f64(1.0 / (i + j + 1) as f64);
+    }
+    a[i * n + i] = a[i * n + i] + f128::from_f64(1.0);
+}
+let a_copy = a.clone();
+cholesky(&mut a, n).unwrap();
+let b = vec![f128::ONE; n];
+let x = solve_cholesky(&a, &b, n);
+
+// GEMM: C = A * B (row-major, m x k * k x n -> m x n)
+let mut c = vec![f128::ZERO; m * n];
+gemm(&a_mat, &b_mat, &mut c, m, n, k);
+
+// Eigenvalue decomposition (symmetric)
+let (eigenvalues, eigenvectors) = jacobi_eigen(&sym_matrix, n, 200).unwrap();
+```
+
+## Supported operations
+
+**Arithmetic:** `+`, `-`, `*`, `/`, `%`, `+=`, `-=`, `*=`, `/=`, unary `-`
+
+**Mixed precision:** `f128 + f64`, `f128 * f64`, etc. (avoids unnecessary promotion). `MultiFloat<N> * f64`, `MultiFloat<N> / f64`.
+
+**Math:** `abs`, `sqrt`, `recip`, `trunc`, `exp`, `ln`, `pow`
+
+**Constants:** `ZERO`, `ONE`, `pi()`, `e()`, `ln2()` -- all computed to full $N$-limb precision
+
+**Conversions:** `From<f64>`, `From<f32>`, `From<i32>`, `From<u32>`, `From<i64>`, `From<u64>`, `FromStr`, `Display`, `Debug`
+
+**Iterator traits:** `Sum`, `Product`
+
+**Comparisons:** `PartialEq`, `PartialOrd`
+
+**Linear algebra (f128):** `dot`, `gemv`, `gemm`, `gemm_atb`, `cholesky`, `cholesky_blocked`, `forward_solve`, `backward_solve`, `solve_cholesky`, `matvec`, `cond_estimate`, `jacobi_eigen`
+
+**Linear algebra (MultiFloat\<N\>):** `mf_dot`, `mf_gemv`, `mf_gemm`, `mf_gemm_atb`, `mf_cholesky`, `mf_cholesky_solve`
+
+**Optional features:**
+- `serde` -- lossless serialization/deserialization (JSON roundtrip preserves all limbs)
+- `num-traits` -- `Zero`, `One`, `Num`, `Float`, `FromPrimitive`, `ToPrimitive`, `NumCast`
+
+## Use cases
+
+### Ill-conditioned linear algebra
+
+The primary motivation. When $\kappa(\mathbf{A}) > 10^{13}$, f64 Cholesky loses all significant digits. f128 extends the working range to $\kappa \sim 10^{28}$; f256 to $\kappa \sim 10^{60}$.
+
+### Overlap matrices in quantum chemistry
 
 In Hartree-Fock and DFT, the Roothaan-Hall equation is a generalized eigenvalue problem:
 
@@ -38,11 +150,11 @@ $$S_{\mu\nu} = \langle \phi_\mu | \phi_\nu \rangle = \int \phi_\mu(\mathbf{r})\,
 
 The standard approach orthogonalizes the basis via $\mathbf{S} = \mathbf{L}\mathbf{L}^T$ (Cholesky) or $\mathbf{X} = \mathbf{S}^{-1/2}$ (canonical orthogonalization). Both require inverting or factoring $\mathbf{S}$.
 
-**The problem is the condition number** $\kappa(\mathbf{S})$. When you use augmented or diffuse basis sets (aug-cc-pVDZ, aug-cc-pVTZ), nearby diffuse Gaussians overlap almost completely:
+When you use augmented or diffuse basis sets (aug-cc-pVDZ, aug-cc-pVTZ), nearby diffuse Gaussians overlap almost completely:
 
 $$S_{\mu\nu} = \left(\frac{4\alpha_\mu\alpha_\nu}{(\alpha_\mu + \alpha_\nu)^2}\right)^{d/4} \exp\!\left(-\frac{\alpha_\mu\alpha_\nu}{\alpha_\mu + \alpha_\nu}|\mathbf{R}_\mu - \mathbf{R}_\nu|^2\right)$$
 
-For diffuse exponents $\alpha \sim 0.01$, this approaches 1.0 for adjacent atoms, making $\mathbf{S}$ nearly singular. The condition number grows with system size:
+For diffuse exponents $\alpha \sim 0.01$, this approaches 1.0 for adjacent atoms, making $\mathbf{S}$ nearly singular:
 
 | System | $N_\text{basis}$ | $\kappa(\mathbf{S})$ | f64 status |
 |--------|:-:|:-:|:-:|
@@ -50,166 +162,28 @@ For diffuse exponents $\alpha \sim 0.01$, this approaches 1.0 for adjacent atoms
 | Protein fragment | ~750 | $10^{13}$ | Cholesky fails |
 | Periodic slab | ~2000 | $10^{20}$+ | Impossible |
 
-**f64 has ~16 decimal digits.** When $\kappa(\mathbf{S}) > 10^{13}$, Cholesky loses all significant digits. When $\kappa(\mathbf{S}) > 10^{16}$, Cholesky produces a negative pivot and refuses to continue. Your SCF never starts.
+**f64 has ~16 decimal digits.** When $\kappa(\mathbf{S}) > 10^{13}$, Cholesky loses all significant digits. f128 (~31 digits) handles the problem directly:
 
-This is a [well-known failure mode](https://server.ccl.net/chemistry/resources/messages/2013/11/07.006-dir/). Current workarounds:
-- **Remove diffuse functions** — sacrifices accuracy for the properties you needed them for
-- **Use MOLOPT basis sets** (CP2K) — sidesteps the problem at the theory level, not the compute level
-- **Canonical orthogonalization with threshold** — discards near-null eigenvectors, changes your basis
-
-None of these solve the underlying numerical problem. They all compromise the physics.
-
-## Why this fixes it
-
-This crate implements **double-double arithmetic**: each scalar is stored as a pair of `f64` values $(h, \ell)$ where the true value is $h + \ell$ exactly, with $|\ell| \leq \frac{1}{2}\,\text{ulp}(h)$.
-
-$$\text{f64: } \epsilon \approx 10^{-16} \quad(16\text{ digits})$$
-
-$$\text{f128 (double-double): } \epsilon \approx 10^{-31} \quad(31\text{ digits})$$
-
-Every arithmetic operation uses error-free transformations (Dekker/Knuth):
-
-$$\texttt{TwoSum}(a,b): \quad s + e = a + b \quad\text{exactly}$$
-
-$$\texttt{TwoProd}(a,b): \quad p + e = a \times b \quad\text{exactly (via FMA)}$$
-
-This gives you ~31 decimal digits per scalar. The Cholesky factorization now handles:
-
-| $\kappa(\mathbf{S})$ | f64 | f128 (this crate) |
+| $\kappa(\mathbf{S})$ | f64 | f128 |
 |:-:|:-:|:-:|
 | $10^{13}$ | Fails | $\|\mathbf{x} - \mathbf{x}_\text{true}\| \sim 10^{-18}$ |
 | $10^{15}$ | Fails | $\|\mathbf{x} - \mathbf{x}_\text{true}\| \sim 10^{-14}$ |
 | $10^{20}$ | Fails | $\|\mathbf{x} - \mathbf{x}_\text{true}\| \sim 10^{-8}$ |
-| $10^{22}$ | Fails | $\|\mathbf{x} - \mathbf{x}_\text{true}\| \sim 10^{-5}$ |
 
-The solver auto-selects the cheapest precision strategy:
+For $\kappa > 10^{28}$, use f256. For $\kappa > 10^{60}$, use f512.
 
-1. **$\kappa < 10^{10}$**: Pure f64 Cholesky. No overhead.
-2. **$10^{10} < \kappa < 10^{16}$**: f64 Cholesky + iterative refinement in f128. Factor once in f64 (fast), compute residual $\mathbf{r} = \mathbf{b} - \mathbf{A}\mathbf{x}$ in f128 (exact), solve correction $\mathbf{A}\,\delta\mathbf{x} = \mathbf{r}$ in f128. Converges in 1–3 iterations.
-3. **$\kappa > 10^{16}$**: Full f128 Cholesky. f64 can't even factor; f128 handles it.
+### Other applications
 
-## How to use it
+- **Geometric predicates** -- orientation tests, in-circle tests where sign correctness matters
+- **Long-time numerical integration** -- ODE/PDE solvers where error accumulates over millions of steps
+- **Number theory / computational mathematics** -- high-precision evaluation of special functions
+- **Compensated summation** -- when Kahan summation is not enough
 
-### Drop-in solve (f64 input)
+## Hilbert matrix demo
 
-```rust
-use quadprec_solver::solve_spd;
-
-let a: Vec<f64> = your_overlap_matrix;  // row-major, n x n
-let b: Vec<f64> = your_rhs;
-let n = basis_size;
-
-let sol = solve_spd(&a, &b, n)?;
-
-sol.x       // Vec<f128> — full quad-precision solution
-sol.x_f64   // Vec<f64>  — truncated (loses digits when kappa > 10^10)
-sol.kappa   // f64       — estimated condition number
-sol.strategy // Float64 | MixedPrecision | Float128
-```
-
-**Note:** When $\kappa(\mathbf{S})$ is large, the solution accuracy is limited by the precision of your *input*. If $\mathbf{A}$ and $\mathbf{b}$ are assembled in f64, you lose $\log_{10}\kappa$ digits before the solve even starts. For the full payoff, assemble in f128.
-
-### Full-precision assembly (the real payoff)
-
-```rust
-use quad::f128;
-use quadprec_solver::solve_spd_f128;
-
-// Assemble S in quad precision — diffuse pairs get full 31-digit accuracy
-let mut s = vec![f128::ZERO; n * n];
-for (i, j) in shell_pairs {
-    let alpha_i = f128::from_f64(exponents[i]);
-    let alpha_j = f128::from_f64(exponents[j]);
-    let r2 = compute_distance_sq_f128(centers[i], centers[j]);
-    s[i * n + j] = overlap_integral_f128(alpha_i, alpha_j, r2);
-    s[j * n + i] = s[i * n + j];
-}
-
-let sol = solve_spd_f128(&s, &b, n)?;
-// sol.x has ~31 - log10(kappa) correct digits
-```
-
-### Using `f128` directly
-
-```rust
-use quad::f128;
-
-let a = f128::from_f64(1.0);
-let b = f128::from_f64(1e-20);
-let c = a + b;
-let d = c - a;
-// d.to_f64() == 1e-20 (exact — f64 would give 0.0)
-
-// Arithmetic: + - * / sqrt() recip() abs()
-// Transcendentals: exp() ln() pow()
-// Parsing: "3.14159265358979323846".parse::<f128>()
-// All operator-overloaded, all #[inline(always)]
-```
-
-### Eigenvalue decomposition
-
-```rust
-use quad::{f128, jacobi_eigen};
-
-// Symmetric matrix (row-major)
-let a = vec![
-    f128::from_f64(2.0), f128::from_f64(1.0),
-    f128::from_f64(1.0), f128::from_f64(3.0),
-];
-let (eigenvalues, eigenvectors) = jacobi_eigen(&a, 2, 100)?;
-// eigenvalues: [1.0, 3.0] (sorted)
-// eigenvectors: orthonormal columns
-```
-
-### Matrix multiply (GEMM)
-
-```rust
-use quad::{f128, gemm, gemm_atb};
-
-// C = A * B  (m×k * k×n → m×n, row-major)
-let mut c = vec![f128::ZERO; m * n];
-gemm(&a, &b, &mut c, m, n, k);
-
-// C = A^T * B  (for orthogonalization: X^T S X)
-gemm_atb(&a, &b, &mut c, m, n, k);
-```
-
-## Integrating with your SCF code
-
-The precision-critical path in SCF is small. You don't need f128 everywhere:
+The Hilbert matrix $H_{ij} = 1/(i+j-1)$ is a classic ill-conditioned test. f64 Cholesky fails at $n=13$. f128 Cholesky with full-precision assembly:
 
 ```
-Your existing code (f64)             This crate (f128)
-┌───────────────────────┐            ┌────────────────────────┐
-│ Electron integrals    │            │                        │
-│ (Coulomb, exchange)   │            │ Overlap matrix S       │
-│                       │            │ Cholesky / eigensolve  │
-│ Fock matrix assembly  │◄──────────►│ Iterative refinement   │
-│                       │            │ Orthogonalization      │
-│ Density matrix P      │            │                        │
-│ SCF convergence check │            │                        │
-└───────────────────────┘            └────────────────────────┘
-        ~90% of wall time                  ~10% of wall time
-```
-
-Concretely, to integrate into an existing Hartree-Fock or DFT code:
-
-1. **Replace your overlap matrix assembly** with f128-precision computation for shell pairs involving diffuse functions. Use `quad::f128` arithmetic.
-
-2. **Replace your Cholesky/orthogonalization** with `solve_spd_f128()` or use `quad::cholesky()` directly on the f128 overlap matrix.
-
-3. **Keep everything else in f64.** Coulomb/exchange integrals, Fock matrix construction, density matrix updates — all stay in f64. These are not precision-limited, they're compute-limited.
-
-4. **Use iterative refinement** (built into `solve_spd()`) for the generalized eigenvalue problem: solve in f64, correct in f128, converge.
-
-If your code uses [libint2](https://github.com/evaleev/libint) or [libcint](https://github.com/sunqm/libcint) for integral evaluation, you can FFI to them for everything except the overlap integrals, which you recompute in f128.
-
-## Demo output
-
-```
---- Part 2: f128 input via solve_spd_f128() ---
-    (matrix assembled in quad precision — the real payoff)
-
   Hilbert  n=12   kappa=1.1e13   ||x-1||=9.89e-18   ||r||=1.18e-31
   Hilbert  n=13   kappa=1.8e14   ||x-1||=1.05e-16   ||r||=5.70e-32
   Hilbert  n=14   kappa=2.9e15   ||x-1||=5.10e-14   ||r||=5.59e-32
@@ -218,59 +192,66 @@ If your code uses [libint2](https://github.com/evaleev/libint) or [libcint](http
   Hilbert  n=20   kappa=4.9e22   ||x-1||=9.52e-5    ||r||=1.07e-31
 ```
 
-f64 Cholesky fails at n=13. f128 keeps going through n=20 ($\kappa = 5 \times 10^{22}$). Residual stays at $\sim 10^{-31}$ throughout — the solver is producing answers accurate to the limits of 31-digit arithmetic.
+Residual stays at $\sim 10^{-31}$ throughout -- the solver produces answers accurate to the limits of 31-digit arithmetic.
 
-## Why not just use a GPU?
+## Architecture
 
-GPUs are going the wrong direction for this problem:
+The crate provides two layers:
 
-| | FP64 | FP16/FP8 |
-|---|---|---|
-| H100 (Hopper) | 34 TFLOPS | 1979 TFLOPS |
-| B200 (Blackwell) | 40 TFLOPS | 9000+ TFLOPS |
-| **Ratio shift** | **1.2x** | **4.5x** |
+**`f128`** -- a hand-tuned double-double type (`hi: f64, lo: f64`). All arithmetic is `#[inline(always)]`. This is the fast path for when ~31 digits suffice.
 
-The silicon budget is pouring into low-precision AI modes. FP64 is an afterthought. And **Apple Silicon GPUs have no FP64 at all** — Metal only supports FP32 and FP16.
+**`MultiFloat<N>`** -- a generic $N$-limb non-overlapping expansion:
 
-Double-double arithmetic runs entirely on the CPU, uses only f64 hardware (which every CPU has), and parallelizes via [Rayon](https://github.com/rayon-rs/rayon) work-stealing. On an M-series Mac, you get 10 performance cores doing f128 Cholesky while the GPU sits idle (or handles the precision-tolerant work).
+```rust
+pub struct MultiFloat<const N: usize> {
+    pub limbs: [f64; N],  // limbs[0] most significant, non-overlapping
+}
+
+pub type f256 = MultiFloat<4>;
+pub type f512 = MultiFloat<8>;
+```
+
+Each limb captures error from the limb above. After every operation, the limb array is renormalized to maintain the non-overlapping invariant: $|\text{limbs}[i+1]| \leq \frac{1}{2}\,\text{ulp}(\text{limbs}[i])$.
+
+Multiplication computes the full convolution of cross-products $a_i \cdot b_j$ for $i+j < N$ using error-free `two_prod`, accumulates into a $2N$ working array, and renormalizes down to $N$ output limbs.
+
+Division uses Newton iteration for the reciprocal ($\lceil\log_2 N\rceil + 2$ steps), starting from an f64 seed. Each step doubles the number of correct bits.
+
+Transcendentals (`exp`, `ln`, `pow`) use argument reduction + Taylor series (for `exp`) and Newton iteration (for `ln`), with iteration counts scaled to the precision level $N$.
 
 ## Crate structure
 
 ```
 crates/
-  quad/              # f128 type, BLAS-like ops, eigensolve, GEMM, SIMD kernels
+  quad/              # f128, f256, f512, MultiFloat<N>, linalg, SIMD kernels
   compensated-sum/   # Neumaier compensated summation for f64 and f128
-  solver/            # solve_spd() — auto-selects precision, iterative refinement
-  overlap/           # Mixed-precision overlap integral assembly with Schwarz screening
+  solver/            # solve_spd() -- auto-selects precision strategy
+  overlap/           # Mixed-precision overlap integral assembly
   demo/              # cargo run --release -p demo
 ```
 
-## v0.2.0 features
-
-- **Jacobi eigensolve** — symmetric eigenvalue decomposition in full f128 precision, needed for canonical orthogonalization
-- **GEMM / GEMM_ATB** — parallel matrix multiply with Rayon, including $\mathbf{A}^T\mathbf{B}$ variant for basis transforms
-- **Blocked Cholesky** — cache-friendly NB=64 blocked factorization, 5-10x faster at $n > 500$
-- **Transcendentals** — `exp()`, `ln()`, `pow()` in f128 precision via argument reduction + Taylor/Newton
-- **FromStr** — parse decimal strings to full 31-digit precision: `"3.14159265358979323846".parse::<f128>()`
-- **NEON SIMD** — 2-wide f64 batch operations on Apple Silicon (aarch64), ~1.5x throughput for dd arithmetic
-- **Apple Accelerate** — optional FFI to dpotrf/dpotrs for 10-100x f64 Cholesky speedup on macOS
-- **num-traits** — optional `Zero`, `One`, `Num`, `Float` trait implementations (`--features num-traits`)
-- **serde** — optional serialization with lossless {hi, lo} roundtrip (`--features serde`)
-- **Canonical orthogonalization** — $\mathbf{X} = \mathbf{U}\,\text{diag}(1/\sqrt{\lambda})$ with threshold for near-null removal
-- **Mixed-precision overlap assembly** — Schwarz screening routes ~5-15% of shell pairs to f128, rest stays f64
-
 ## Requirements
 
-- Rust 2024 edition
-- Any platform with FMA (fused multiply-add) support — all modern x86-64 and ARM processors
-- Core: no external dependencies beyond `rayon`
-- Optional: `num-traits`, `serde` via feature flags
-- macOS: Apple Accelerate integration via `--features accelerate`
+- **Rust 2024 edition** (workspace version 0.3.0)
+- **FMA support** -- all modern x86-64 (Haswell+) and ARM (all AArch64) processors. The `two_prod` primitive requires hardware FMA for correctness.
+- **rayon** -- used for parallel GEMV, GEMM, and Cholesky
+- Optional: `serde`, `num-traits` via feature flags
+
+```toml
+[dependencies]
+hyperprec = "0.3"
+
+# With optional features:
+hyperprec = { version = "0.3", features = ["serde", "num-traits"] }
+```
 
 ## References
 
 - T.J. Dekker, "A floating-point technique for extending the available precision" (1971)
-- D.E. Knuth, *The Art of Computer Programming*, Vol 2 — error-free transformations
-- [SCF convergence failure with aug-cc-pVDZ](https://server.ccl.net/chemistry/resources/messages/2013/11/07.006-dir/) — the exact failure this solves
-- [CP2K SCF convergence problems with large basis sets](https://groups.google.com/g/cp2k/c/6JDb5uy5r0M)
+- D.E. Knuth, *The Art of Computer Programming*, Vol 2 -- error-free transformations
 - Y. Hida, X.S. Li, D.H. Bailey, "Algorithms for Quad-Double Precision Floating Point Arithmetic" (2001)
+- [QD Library](https://www.davidhbailey.com/dhbsoftware/) -- the original quad-double C++/Fortran implementation
+
+## License
+
+MIT

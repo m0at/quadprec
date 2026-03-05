@@ -4,6 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-quad = { path = "../quad", package = "quadprec" }
+quad = { path = "../quad", package = "hyperprec" }
 compensated-sum = { path = "../compensated-sum" }
 rayon.workspace = true

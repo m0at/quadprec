@@ -16,9 +16,9 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "compensated-sum"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
- "quadprec",
+ "hyperprec",
  "rayon",
 ]
 
@@ -49,9 +49,9 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
 name = "demo"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
- "quadprec",
+ "hyperprec",
  "quadprec-solver",
  "rayon",
 ]
@@ -72,6 +72,17 @@ dependencies = [
  "libc",
  "r-efi",
  "wasip2",
+]
+
+[[package]]
+name = "hyperprec"
+version = "0.3.0"
+dependencies = [
+ "num-traits",
+ "rand",
+ "rayon",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -103,10 +114,10 @@ dependencies = [
 
 [[package]]
 name = "overlap"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "compensated-sum",
- "quadprec",
+ "hyperprec",
  "rayon",
 ]
 
@@ -129,21 +140,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "quadprec"
-version = "0.2.0"
-dependencies = [
- "num-traits",
- "rand",
- "rayon",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "quadprec-solver"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
- "quadprec",
+ "hyperprec",
  "rayon",
 ]
 
